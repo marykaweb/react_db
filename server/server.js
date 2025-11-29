@@ -70,9 +70,9 @@ app.post('/api/tables', (req, res) => {
 
  // Валидация имени таблицы для предотвращения SQL-инъекций
  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(name)) {
-   console.error('❌ Невалидное имя таблицы:', name);
-   return res.status(400).json({ error: 'Невалидное имя таблицы. Имя таблицы может содержать только буквы, цифры, пробелы и подчеркивания, и должно начинаться с буквы или подчеркивания.' });
- }
+    console.error('❌ Невалидное имя таблицы:', name);
+    return res.status(400).json({ error: 'Невалидное имя таблицы. Имя таблицы может содержать только буквы, цифры, пробелы и подчеркивания, и должно начинаться с буквы или подчеркивания.' });
+  }
 
   db.run('INSERT INTO tables (name) VALUES (?)', [name], function (err) {
     if (err) return res.status(500).json({ error: err.message });
@@ -81,7 +81,7 @@ app.post('/api/tables', (req, res) => {
     db.run(`CREATE TABLE IF NOT EXISTS "${name}" (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
 
     res.json({ id: this.lastID, name });
- });
+  });
 });
 
 // =====================================================
@@ -100,6 +100,62 @@ app.delete('/api/tables/:name', (req, res) => {
   db.run('DELETE FROM columns_meta WHERE table_name = ?', [name]);
   db.run(`DROP TABLE IF EXISTS "${name}"`);
  res.json({ deleted: name });
+});
+
+// =====================================================
+// 🔹 Переименовать таблицу
+// =====================================================
+app.put('/api/tables/:oldName', (req, res) => {
+ const { oldName } = req.params;
+ const { newName } = req.body;
+
+ if (!newName) return res.status(400).json({ error: 'Новое имя таблицы обязательно' });
+
+ // Валидация старого и нового имени таблицы для предотвращения SQL-инъекций
+ if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(oldName)) {
+   console.error('❌ Невалидное старое имя таблицы:', oldName);
+   return res.status(400).json({ error: 'Невалидное старое имя таблицы' });
+ }
+
+ if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(newName)) {
+   console.error('❌ Невалидное новое имя таблицы:', newName);
+   return res.status(400).json({ error: 'Невалидное новое имя таблицы' });
+ }
+
+ // Проверяем, существует ли таблица с новым именем
+ db.get('SELECT name FROM tables WHERE name = ?', [newName], (err, existingTable) => {
+   if (err) return res.status(500).json({ error: err.message });
+
+   if (existingTable) {
+     return res.status(400).json({ error: `Таблица с именем "${newName}" уже существует` });
+   }
+
+   // Переименовываем таблицу в служебной таблице
+   db.run('UPDATE tables SET name = ? WHERE name = ?', [newName, oldName], function (updateErr) {
+     if (updateErr) return res.status(500).json({ error: updateErr.message });
+
+     if (this.changes === 0) {
+       return res.status(404).json({ error: `Таблица "${oldName}" не найдена` });
+     }
+
+     // Обновляем имя таблицы в метаданных столбцов
+     db.run('UPDATE columns_meta SET table_name = ? WHERE table_name = ?', [newName, oldName], (metaErr) => {
+       if (metaErr) return res.status(500).json({ error: metaErr.message });
+
+       // Фактически переименовываем таблицу в базе данных
+       db.run(`ALTER TABLE "${oldName}" RENAME TO "${newName}"`, (renameErr) => {
+         if (renameErr) {
+           // Если произошла ошибка при переименовании, откатываем изменения в служебных таблицах
+           db.run('UPDATE tables SET name = ? WHERE name = ?', [oldName, newName]);
+           db.run('UPDATE columns_meta SET table_name = ? WHERE table_name = ?', [oldName, newName]);
+           return res.status(500).json({ error: renameErr.message });
+         }
+
+         res.json({ oldName, newName });
+       });
+     });
+   });
+ });
 });
 
 // =====================================================
@@ -194,23 +250,102 @@ app.delete('/api/:table/columns/:column', (req, res) => {
   const { table, column } = req.params;
 
   // Валидация имени таблицы для предотвращения SQL-инъекций
+ if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(table)) {
+    console.error('❌ Невалидное имя таблицы:', table);
+    return res.status(400).json({ error: 'Невалидное имя таблицы' });
+  }
+
+  // Валидация имени столбца для предотвращения SQL-инъекций
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(column)) {
+    console.error('❌ Невалидное имя столбца:', column);
+    return res.status(400).json({ error: 'Невалидное имя столбца' });
+  }
+
+ // Заменяем пробелы на подчеркивания для использования в базе данных
+ const dbColumnName = column.replace(/\s+/g, '_');
+
+  db.run('DELETE FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, dbColumnName], (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ success: true, column });
+  });
+});
+
+// =====================================================
+// 🔹 Переименовать столбец
+// =====================================================
+app.put('/api/:table/columns/:oldColumn', (req, res) => {
+  const { table, oldColumn } = req.params;
+  const { newColumn } = req.body;
+
+  if (!newColumn) return res.status(400).json({ error: 'Новое имя столбца обязательно' });
+
+ // Валидация имени таблицы для предотвращения SQL-инъекций
   if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(table)) {
     console.error('❌ Невалидное имя таблицы:', table);
     return res.status(400).json({ error: 'Невалидное имя таблицы' });
   }
 
- // Валидация имени столбца для предотвращения SQL-инъекций
-if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(column)) {
-   console.error('❌ Невалидное имя столбца:', column);
-   return res.status(400).json({ error: 'Невалидное имя столбца' });
- }
+  // Валидация старого и нового имени столбца для предотвращения SQL-инъекций
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9 ]*$/.test(oldColumn)) {
+   console.error('❌ Невалидное старое имя столбца:', oldColumn);
+   return res.status(400).json({ error: 'Невалидное старое имя столбца' });
+  }
 
-  // Заменяем пробелы на подчеркивания для использования в базе данных
-  const dbColumnName = column.replace(/\s+/g, '_');
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9 ]*$/.test(newColumn)) {
+   console.error('❌ Невалидное новое имя столбца:', newColumn);
+   return res.status(400).json({ error: 'Невалидное новое имя столбца' });
+  }
 
-  db.run('DELETE FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, dbColumnName], (err) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true, column });
+  // Преобразуем имена столбцов для использования в базе данных
+  const oldDbColumnName = oldColumn.replace(/\s+/g, '_');
+  const newDbColumnName = newColumn.replace(/\s+/g, '_');
+
+  // Проверяем, существует ли столбец с указанным старым именем в метаданных
+  db.get('SELECT column_name FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, oldDbColumnName], (metaCheckErr, existingColumn) => {
+    if (metaCheckErr) {
+      console.error('❌ Ошибка проверки существования столбца:', metaCheckErr.message);
+      return res.status(500).json({ error: metaCheckErr.message });
+    }
+
+    if (!existingColumn) {
+      return res.status(404).json({ error: `Столбец "${oldColumn}" не найден в таблице "${table}"` });
+    }
+
+    // Проверяем, существует ли столбец с новым именем
+    db.get('SELECT column_name FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, newDbColumnName], (err, existingColumn) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      if (existingColumn) {
+        return res.status(400).json({ error: `Столбец с именем "${newColumn}" уже существует в таблице "${table}"` });
+      }
+
+      // Проверяем, существует ли таблица
+      db.all(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, [table], (checkErr, tables) => {
+        if (checkErr) {
+          console.error('❌ Ошибка при проверке таблицы:', checkErr.message);
+          return res.status(500).json({ error: 'Ошибка при проверке таблицы' });
+        }
+
+        if (!tables || tables.length === 0) {
+          console.error('❌ Таблица не найдена:', table);
+          return res.status(404).json({ error: `Таблица "${table}" не найдена` });
+        }
+
+        // Обновляем имя столбца в метаданных
+        db.run('UPDATE columns_meta SET column_name = ? WHERE table_name = ? AND column_name = ?', [newDbColumnName, table, oldDbColumnName], function (metaErr) {
+          if (metaErr) {
+            console.error('❌ Ошибка UPDATE в columns_meta:', metaErr.message);
+            return res.status(500).json({ error: metaErr.message });
+          }
+
+          if (this.changes === 0) {
+            return res.status(404).json({ error: `Столбец "${oldColumn}" не найден в таблице "${table}"` });
+          }
+
+          res.json({ table, oldColumn, newColumn });
+        });
+      });
+    });
   });
 });
 
