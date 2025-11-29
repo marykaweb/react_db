@@ -68,14 +68,20 @@ app.post('/api/tables', (req, res) => {
   const { name } = req.body;
   if (!name) return res.status(400).json({ error: 'Имя таблицы обязательно' });
 
+ // Валидация имени таблицы для предотвращения SQL-инъекций
+ if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(name)) {
+   console.error('❌ Невалидное имя таблицы:', name);
+   return res.status(400).json({ error: 'Невалидное имя таблицы. Имя таблицы может содержать только буквы, цифры, пробелы и подчеркивания, и должно начинаться с буквы или подчеркивания.' });
+ }
+
   db.run('INSERT INTO tables (name) VALUES (?)', [name], function (err) {
     if (err) return res.status(500).json({ error: err.message });
 
     // создаём саму таблицу данных
-    db.run(`CREATE TABLE IF NOT EXISTS ${name} (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS "${name}" (id INTEGER PRIMARY KEY AUTOINCREMENT)`);
 
     res.json({ id: this.lastID, name });
-  });
+ });
 });
 
 // =====================================================
@@ -83,10 +89,17 @@ app.post('/api/tables', (req, res) => {
 // =====================================================
 app.delete('/api/tables/:name', (req, res) => {
   const { name } = req.params;
+
+  // Валидация имени таблицы для предотвращения SQL-инъекций
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(name)) {
+    console.error('❌ Невалидное имя таблицы:', name);
+    return res.status(400).json({ error: 'Невалидное имя таблицы. Имя таблицы может содержать только буквы, цифры, пробелы и подчеркивания, и должно начинаться с буквы или подчеркивания.' });
+  }
+
   db.run('DELETE FROM tables WHERE name = ?', [name]);
   db.run('DELETE FROM columns_meta WHERE table_name = ?', [name]);
-  db.run(`DROP TABLE IF EXISTS ${name}`);
-  res.json({ deleted: name });
+  db.run(`DROP TABLE IF EXISTS "${name}"`);
+ res.json({ deleted: name });
 });
 
 // =====================================================
@@ -119,19 +132,20 @@ app.post('/api/:table/columns', (req, res) => {
   }
 
   const originalColumnName = column_name.trim();
-  // Заменяем пробелы на подчеркивания для использования в базе данных
-  const cleanColumnName = originalColumnName.replace(/\s+/g, '_');
 
-  // Валидация имени столбца (после замены пробелов на подчеркивания)
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(cleanColumnName)) {
-    console.error('❌ Невалидное имя столбца:', cleanColumnName);
+  // Валидация имени столбца (до замены пробелов на подчеркивания)
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9 ]*$/.test(originalColumnName)) {
+    console.error('❌ Невалидное имя столбца:', originalColumnName);
     return res.status(400).json({
       error: 'Имя столбца может содержать только буквы, цифры и пробелы (пробелы будут заменены на подчеркивания), и должно начинаться с буквы или подчеркивания'
     });
   }
 
+  // Заменяем пробелы на подчеркивания для использования в базе данных
+  const cleanColumnName = originalColumnName.replace(/\s+/g, '_');
+
   // Валидация имени таблицы
-  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(table)) {
     console.error('❌ Невалидное имя таблицы:', table);
     return res.status(400).json({ error: 'Невалидное имя таблицы' });
   }
@@ -149,7 +163,7 @@ app.post('/api/:table/columns', (req, res) => {
     }
 
     // Добавляем столбец
-    db.run(`ALTER TABLE ${table} ADD COLUMN ${cleanColumnName} TEXT`, [], (err) => {
+    db.run(`ALTER TABLE "${table}" ADD COLUMN ${cleanColumnName} TEXT`, [], (err) => {
       if (err) {
         console.error('❌ Ошибка ALTER TABLE:', err.message);
         if (err.message.includes('duplicate column') || err.message.includes('already exists')) {
@@ -179,7 +193,22 @@ app.post('/api/:table/columns', (req, res) => {
 app.delete('/api/:table/columns/:column', (req, res) => {
   const { table, column } = req.params;
 
-  db.run('DELETE FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, column], (err) => {
+  // Валидация имени таблицы для предотвращения SQL-инъекций
+  if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(table)) {
+    console.error('❌ Невалидное имя таблицы:', table);
+    return res.status(400).json({ error: 'Невалидное имя таблицы' });
+  }
+
+ // Валидация имени столбца для предотвращения SQL-инъекций
+if (!/^[a-zA-Zа-яА-ЯёЁ_][a-zA-Zа-яА-ЯёЁ0-9_ ]*$/.test(column)) {
+   console.error('❌ Невалидное имя столбца:', column);
+   return res.status(400).json({ error: 'Невалидное имя столбца' });
+ }
+
+  // Заменяем пробелы на подчеркивания для использования в базе данных
+  const dbColumnName = column.replace(/\s+/g, '_');
+
+  db.run('DELETE FROM columns_meta WHERE table_name = ? AND column_name = ?', [table, dbColumnName], (err) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ success: true, column });
   });
@@ -198,11 +227,11 @@ app.get('/api/:table', (req, res) => {
 
   console.log('✅ GET /api/:table вызван, table:', table);
 
-  db.all(`PRAGMA table_info(${table})`, (err, info) => {
+  db.all(`PRAGMA table_info("${table}")`, (err, info) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!info.length) return res.json([]);
 
-    db.all(`SELECT * FROM ${table}`, [], (err2, rows) => {
+    db.all(`SELECT * FROM "${table}"`, [], (err2, rows) => {
       if (err2) return res.status(500).json({ error: err2.message });
       res.json(rows);
     });
@@ -218,7 +247,7 @@ app.post('/api/:table', (req, res) => {
 
   const placeholders = fields.map(() => '?').join(',');
   db.run(
-    `INSERT INTO ${table} (${fields.join(',')}) VALUES (${placeholders})`,
+    `INSERT INTO "${table}" (${fields.join(',')}) VALUES (${placeholders})`,
     values,
     function (err) {
       if (err) return res.status(500).json({ error: err.message });
@@ -229,10 +258,10 @@ app.post('/api/:table', (req, res) => {
 
 app.delete('/api/:table/:id', (req, res) => {
   const { table, id } = req.params;
-  db.run(`DELETE FROM ${table} WHERE id = ?`, [id], function (err) {
+  db.run(`DELETE FROM "${table}" WHERE id = ?`, [id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ deletedId: id });
-  });
+ });
 });
 
 app.put('/api/:table/:id', (req, res) => {
@@ -241,7 +270,7 @@ app.put('/api/:table/:id', (req, res) => {
   const values = Object.values(req.body);
 
   const setClause = fields.map(f => `${f} = ?`).join(',');
-  db.run(`UPDATE ${table} SET ${setClause} WHERE id = ?`, [...values, id], function (err) {
+  db.run(`UPDATE "${table}" SET ${setClause} WHERE id = ?`, [...values, id], function (err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ id, ...req.body });
   });

@@ -1,13 +1,15 @@
 // client/src/pages/Admin.jsx
 import React, { useEffect, useState } from 'react';
-import { Button, Table, Form, InputGroup } from 'react-bootstrap';
+import { Button, Table, Form, InputGroup, Modal } from 'react-bootstrap';
 
 export default function Admin() {
   const [tabs, setTabs] = useState([]);
   const [newTab, setNewTab] = useState('');
-  const [tableColumns, setTableColumns] = useState({});
+ const [tableColumns, setTableColumns] = useState({});
   const [newColumn, setNewColumn] = useState({});
   const [expandedTable, setExpandedTable] = useState(null); // какая таблица раскрыта
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   // ------------------ Загрузка таблиц ------------------
   const fetchTabs = () => {
@@ -40,16 +42,29 @@ export default function Admin() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newTab })
     })
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) {
+          return res.json().then(err => {
+            setErrorMessage(err.error || 'Ошибка при создании таблицы');
+            setShowErrorModal(true);
+            return null;
+          });
+        }
+        return res.json();
+      })
       .then(t => {
-        if (t.name) {
+        if (t && t.name) {
           setTabs([...tabs, t]);
           setNewTab('');
           fetchColumns(t.name);
         }
       })
-      .catch(console.error);
-  };
+      .catch(err => {
+        console.error('Ошибка при добавлении таблицы:', err);
+        setErrorMessage('Ошибка при добавлении таблицы');
+        setShowErrorModal(true);
+      });
+ };
 
   const deleteTab = (name) => {
     fetch(`http://localhost:4000/api/tables/${name}`, { method: 'DELETE' })
@@ -67,7 +82,8 @@ export default function Admin() {
   const addColumn = (table) => {
     const columnName = newColumn[table];
     if (!columnName || !columnName.trim()) {
-      alert('Введите имя столбца');
+      setErrorMessage('Введите имя столбца');
+      setShowErrorModal(true);
       return;
     }
 
@@ -82,24 +98,28 @@ export default function Admin() {
       .then(res => {
         if (!res.ok) {
           return res.json().then(err => {
-            console.error('Ошибка сервера:', err);
-            return Promise.reject(err);
+            setErrorMessage(err.error || 'Ошибка при добавлении столбца');
+            setShowErrorModal(true);
+            return null;
           });
         }
         return res.json();
       })
       .then((result) => {
-        console.log('Столбец успешно добавлен:', result);
-        fetchColumns(table);
-        setNewColumn(prev => ({ ...prev, [table]: '' }));
-        if (result.warning) {
-          alert(result.warning);
+        if (result) {
+          console.log('Столбец успешно добавлен:', result);
+          fetchColumns(table);
+          setNewColumn(prev => ({ ...prev, [table]: '' }));
+          if (result.warning) {
+            setErrorMessage(result.warning);
+            setShowErrorModal(true);
+          }
         }
       })
       .catch(err => {
         console.error('Ошибка при добавлении столбца:', err);
-        const errorMessage = err?.error || err?.message || 'Не удалось добавить столбец';
-        alert(errorMessage);
+        setErrorMessage(err?.error || err?.message || 'Не удалось добавить столбец');
+        setShowErrorModal(true);
       });
   };
 
@@ -209,6 +229,18 @@ export default function Admin() {
           ))}
         </tbody>
       </Table>
+      {/* Модальное окно для ошибок */}
+      <Modal show={showErrorModal} onHide={() => setShowErrorModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>Ошибка</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>{errorMessage}</Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowErrorModal(false)}>
+            Закрыть
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 }
